@@ -1,0 +1,76 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK
+        env:
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
+        run: |
+          root="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          mkdir -p "$root/licenses"
+          printf '%s\n' \
+            "8933bad161af4178b1185d1a37fbf41ea5269c55" \
+            "d56f5187479451eabf01fb78af6dfcb131a6481e" \
+            "24333f8a63b6825ea9c5514f83c2829b004d1fee" \
+            > "$root/licenses/android-sdk-license"
+          printf '%s\n' "601085b94cd77f0b54ff86406957099ebe79c4d6" \
+            > "$root/licenses/android-googletv-license"
+          printf '%s\n' \
+            "84831b9409646161da1b320b1c6c293fc9bc5c" \
+            "504667f4c0de7af1a06de9f4b1727b84351f2910" \
+            > "$root/licenses/android-sdk-preview-license"
+          printf '%s\n' "33b6a2b64607f11b759f320ef9dff4ae6c47d97a" \
+            > "$root/licenses/google-gdk-license"
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;34.0.0"
+
+      - name: Debug keystore
+        run: |
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair \
+            -keystore "$HOME/.android/debug.keystore" \
+            -storepass android -keypass android \
+            -alias androiddebugkey \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Assemble
+        run: chmod +x ./gradlew && ./gradlew assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bilibili-music
+          path: app/build/outputs/apk/debug/bilibili-music-*.apk
+          if-no-files-found: error
+
+      - name: Publish release
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=latest
+          gh release delete "$tag" --yes --cleanup-tag || true
+          gh release create "$tag" app/build/outputs/apk/debug/bilibili-music-*.apk \
+            --title "最新构建" \
+            --notes "提交 ${GITHUB_SHA}" \
+            --latest
